@@ -87,7 +87,7 @@ function drawDetail(panel) {
       <td>${sup}</td>
       <td>${p.cartons || '—'}</td>
       <td>${p.totalWeight || '—'} kg</td>
-      <td>${p.length||'?'}×${p.width||'?'}×${p.height||'?'} cm</td>
+      <td>${formatDims(p)}</td>
       <td>${p.bondLocation || '—'}</td>
     </tr>
   `).join('')
@@ -304,7 +304,7 @@ function genPackingList() {
       <td>${sup}</td>
       <td>${p.cartons || '—'}</td>
       <td>${p.totalWeight || '—'} kg</td>
-      <td>${p.length||'?'}×${p.width||'?'}×${p.height||'?'} cm</td>
+      <td>${formatDims(p)}</td>
     </tr>
   `).join('')
 
@@ -554,4 +554,12 @@ async function loadOrders() {
 function gv(id) {
   const el = document.getElementById(id)
   return el ? el.value : ''
+}
+
+function formatDims(p) {
+  if (p.dimensions) return p.dimensions
+  if (p.length && p.width && p.height) {
+    return `${p.length}×${p.width}×${p.height} cm`
+  }
+  return '—'
 }

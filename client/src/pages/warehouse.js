@@ -7,7 +7,7 @@
 // Bond label + Final label generation
 // Weight/dimensions per delivery event
 // Country of origin per line item
-// Status flows to Open Orders on every save
+// Warehouse progress flows to Open Orders without overwriting customer notes
 
 import { db } from '../services/firebase.js'
 import {
@@ -115,6 +115,7 @@ function drawGrid(rows) {
           <th>Customer</th>
           <th>Suppliers</th>
           <th>Warehouse status</th>
+          <th>Bond deliveries</th>
           <th>Summary</th>
           <th></th>
         </tr>
@@ -126,6 +127,7 @@ function drawGrid(rows) {
             <td>${x.customerName || '—'}</td>
             <td>${supplierList(x)}</td>
             <td>${whStatusBadge(x)}</td>
+            <td style="font-size:12px;color:#9ca3af">${bondSummary(x)}</td>
             <td style="font-size:12px;color:#9ca3af">${whSummary(x)}</td>
             <td>
               <button onclick="window._whOpen('${x.id}')">Book in / labels</button>
@@ -168,6 +170,11 @@ async function openDetail(id) {
     ${order.warehouseSummary ? `
       <div class="card" style="margin-bottom:16px;border-left:3px solid #3b82f6">
         <strong>Current status:</strong> ${order.warehouseSummary}
+      </div>` : ''}
+
+    ${deliveryEvents(order).length ? `
+      <div class="card" style="margin-bottom:16px;border-left:3px solid #059669">
+        <strong>In bond:</strong> ${bondSummary(order)}
       </div>` : ''}
 
     <div class="card" style="margin-bottom:16px">
@@ -268,7 +275,8 @@ async function openDetail(id) {
 // SUPPLIER PANEL (one per supplier tab)
 // ─────────────────────────────────────────────────────────────
 function renderSupplierPanel(order, supplierName, lines, si) {
-  const pack = (order.packingBySup || {})[supplierName] || {}
+  const deliveries = deliveryEvents(order)
+    .filter(x => x.supplierName === supplierName)
 
   return `
     <div class="card" style="border-radius:0 6px 6px 6px;margin-bottom:0">
@@ -371,48 +379,77 @@ function renderSupplierPanel(order, supplierName, lines, si) {
             <label style="font-size:12px;color:#9ca3af">Cartons</label>
             <input id="pack-cartons-${si}"
               placeholder="No. cartons"
-              value="${pack.cartons || ''}" />
+              value="" />
           </div>
           <div>
             <label style="font-size:12px;color:#9ca3af">Weight (kg)</label>
             <input id="pack-weight-${si}"
               type="number" step="0.01"
               placeholder="Total kg"
-              value="${pack.totalWeight || ''}" />
+              value="" />
           </div>
           <div>
             <label style="font-size:12px;color:#9ca3af">Length (cm)</label>
             <input id="pack-l-${si}"
               type="number"
               placeholder="L"
-              value="${pack.length || ''}" />
+              value="" />
           </div>
           <div>
             <label style="font-size:12px;color:#9ca3af">Width (cm)</label>
             <input id="pack-w-${si}"
               type="number"
               placeholder="W"
-              value="${pack.width || ''}" />
+              value="" />
           </div>
           <div>
             <label style="font-size:12px;color:#9ca3af">Height (cm)</label>
             <input id="pack-h-${si}"
               type="number"
               placeholder="H"
-              value="${pack.height || ''}" />
+              value="" />
           </div>
           <div>
             <label style="font-size:12px;color:#9ca3af">Bond location</label>
             <input id="pack-bond-${si}"
               placeholder="e.g. A3, Bay 7…"
-              value="${pack.bondLocation || ''}" />
+              value="" />
           </div>
         </div>
         <div style="margin-top:12px">
           <button id="save-pack-${si}" style="background:#059669">
-            Save weight / dimensions / bond location
+            Save delivery into bond
           </button>
         </div>
+
+        ${deliveries.length ? `
+          <div style="margin-top:16px">
+            <h4 style="margin-bottom:8px;color:#9ca3af;font-size:13px">
+              Delivery history in bond
+            </h4>
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Cartons</th>
+                  <th>Weight</th>
+                  <th>Dimensions</th>
+                  <th>Bond location</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${deliveries.map(x => `
+                  <tr>
+                    <td>${formatDateTime(x.savedAt)}</td>
+                    <td>${x.cartons || '—'}</td>
+                    <td>${x.totalWeight || '—'} kg</td>
+                    <td>${formatDims(x)}</td>
+                    <td>${x.bondLocation || '—'}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>` : ''}
       </div>
 
     </div>
@@ -476,9 +513,7 @@ async function receiveLine(orderId, origIndex, si, linePos) {
   await updateDoc(doc(db, 'orders', orderId), {
     items,
     warehouseStatus:  whStatus,
-    warehouseSummary: whSummary,
-    // Also push status to customerStatus so Open Orders shows it
-    customerStatus:   whSummary
+    warehouseSummary: whSummary
   })
 
   notify('Receipt saved', 'success')
@@ -494,8 +529,9 @@ async function savePackingInfo(orderId, si, supplierName) {
 
   const order = { id: snap.id, ...snap.data() }
 
-  const packingBySup = { ...(order.packingBySup || {}) }
-  packingBySup[supplierName] = {
+  const delivery = {
+    id:           `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    supplierName,
     cartons:     v(`pack-cartons-${si}`),
     totalWeight: v(`pack-weight-${si}`),
     length:      v(`pack-l-${si}`),
@@ -505,19 +541,69 @@ async function savePackingInfo(orderId, si, supplierName) {
     savedAt:     new Date().toISOString()
   }
 
-  // Aggregate totals across all suppliers for shipping page
-  const packing = aggregatePacking(packingBySup)
+  if (!delivery.cartons && !delivery.totalWeight &&
+      !delivery.length && !delivery.width &&
+      !delivery.height && !delivery.bondLocation) {
+    notify('Enter delivery details before saving', 'warn')
+    return
+  }
+
+  const warehouseDeliveries = [
+    ...deliveryEvents(order),
+    delivery
+  ]
+
+  const { packingBySup, packing } =
+    aggregateDeliveries(warehouseDeliveries)
 
   await updateDoc(doc(db, 'orders', orderId), {
+    warehouseDeliveries,
     packingBySup,
     packing   // shipping page reads `packing`
   })
 
-  notify(`Packing info saved for ${supplierName}`, 'success')
+  notify(`Delivery saved into bond for ${supplierName}`, 'success')
   openDetail(orderId)
 }
 
-// Merge all supplier packing into one totals object for shipping
+// Merge delivery events into supplier and total packing for shipping
+function aggregateDeliveries(deliveries) {
+  const packingBySup = {}
+
+  deliveries.forEach(d => {
+    const supplier = d.supplierName || 'Unknown supplier'
+    const current = packingBySup[supplier] || {
+      cartons: 0,
+      totalWeight: 0,
+      dimensions: [],
+      bondLocations: [],
+      latestSavedAt: ''
+    }
+
+    current.cartons += Number(d.cartons || 0)
+    current.totalWeight += Number(d.totalWeight || 0)
+    if (d.length && d.width && d.height) current.dimensions.push(formatDims(d))
+    if (d.bondLocation) current.bondLocations.push(d.bondLocation)
+    current.latestSavedAt = d.savedAt || current.latestSavedAt
+
+    packingBySup[supplier] = current
+  })
+
+  Object.keys(packingBySup).forEach(supplier => {
+    const p = packingBySup[supplier]
+    p.cartons = p.cartons || ''
+    p.totalWeight = p.totalWeight ? p.totalWeight.toFixed(2) : ''
+    p.dimensions = [...new Set(p.dimensions)].join(' / ')
+    p.bondLocation = [...new Set(p.bondLocations)].join(' / ')
+    p.savedAt = p.latestSavedAt
+    delete p.bondLocations
+    delete p.latestSavedAt
+  })
+
+  const packing = aggregatePacking(packingBySup)
+  return { packingBySup, packing }
+}
+
 function aggregatePacking(packingBySup) {
   let totalWeight = 0, totalCartons = 0
   const dims = []
@@ -525,9 +611,8 @@ function aggregatePacking(packingBySup) {
   Object.values(packingBySup).forEach(p => {
     totalWeight  += Number(p.totalWeight || 0)
     totalCartons += Number(p.cartons || 0)
-    if (p.length && p.width && p.height) {
-      dims.push(`${p.length}×${p.width}×${p.height}`)
-    }
+    if (p.dimensions) dims.push(p.dimensions)
+    if (p.length && p.width && p.height) dims.push(formatDims(p))
   })
 
   return {
@@ -571,6 +656,41 @@ function calcWhSummary(order, items) {
 function whSummary(order) {
   return order.warehouseSummary ||
     calcWhSummary(order, order.items || [])
+}
+
+function deliveryEvents(order) {
+  if (Array.isArray(order.warehouseDeliveries)) {
+    return order.warehouseDeliveries
+  }
+
+  return Object.entries(order.packingBySup || {}).map(([supplierName, p]) => ({
+    supplierName,
+    cartons: p.cartons,
+    totalWeight: p.totalWeight,
+    length: p.length,
+    width: p.width,
+    height: p.height,
+    bondLocation: p.bondLocation,
+    savedAt: p.savedAt
+  }))
+}
+
+function bondSummary(order) {
+  const deliveries = deliveryEvents(order)
+  if (!deliveries.length) return 'No deliveries in bond'
+
+  const totalCartons = deliveries.reduce((s, x) =>
+    s + Number(x.cartons || 0), 0)
+  const totalWeight = deliveries.reduce((s, x) =>
+    s + Number(x.totalWeight || 0), 0)
+  const locations = [...new Set(
+    deliveries.map(x => x.bondLocation).filter(Boolean)
+  )]
+
+  return `${deliveries.length} delivery${deliveries.length === 1 ? '' : 'ies'} in bond` +
+    `${totalCartons ? `, ${totalCartons} carton${totalCartons === 1 ? '' : 's'}` : ''}` +
+    `${totalWeight ? `, ${totalWeight.toFixed(2)} kg` : ''}` +
+    `${locations.length ? `, ${locations.join(' / ')}` : ''}`
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -632,10 +752,10 @@ async function printBondLabel(orderId) {
   const snap = await getDoc(doc(db, 'orders', orderId))
   if (!snap.exists()) return
   const order = { id: snap.id, ...snap.data() }
-  const packingBySup = order.packingBySup || {}
+  const deliveries = deliveryEvents(order)
 
   // One bond label per supplier delivery
-  const labelPages = Object.entries(packingBySup).map(([sup, p]) => `
+  const labelPages = deliveries.map(p => `
     <div style="
       font-family:Arial,sans-serif;
       border:3px solid #000;
@@ -651,11 +771,11 @@ async function printBondLabel(orderId) {
         <tr><td style="padding:6px 4px;color:#555;width:40%">Order No.</td>
             <td style="padding:6px 4px;font-weight:700">${order.poNumber || '—'}</td></tr>
         <tr><td style="padding:6px 4px;color:#555">Supplier</td>
-            <td style="padding:6px 4px;font-weight:700">${sup}</td></tr>
+            <td style="padding:6px 4px;font-weight:700">${p.supplierName || '—'}</td></tr>
         <tr><td style="padding:6px 4px;color:#555">Weight</td>
             <td style="padding:6px 4px;font-weight:700">${p.totalWeight || '—'} kg</td></tr>
         <tr><td style="padding:6px 4px;color:#555">Dimensions</td>
-            <td style="padding:6px 4px;font-weight:700">${p.length||'?'}×${p.width||'?'}×${p.height||'?'} cm</td></tr>
+            <td style="padding:6px 4px;font-weight:700">${formatDims(p)}</td></tr>
         <tr><td style="padding:6px 4px;color:#555">Cartons</td>
             <td style="padding:6px 4px;font-weight:700">${p.cartons || '—'}</td></tr>
         <tr style="background:#f5f5f5"><td style="padding:8px 4px;color:#555">Bond location</td>
@@ -781,6 +901,27 @@ function whStatusBadge(order) {
     padding:4px 10px;border-radius:20px;
     font-size:12px;font-weight:700
   ">${st}</span>`
+}
+
+function formatDims(p) {
+  if (p.dimensions) return p.dimensions
+  if (p.length && p.width && p.height) {
+    return `${p.length}×${p.width}×${p.height} cm`
+  }
+  return '—'
+}
+
+function formatDateTime(value) {
+  if (!value) return '—'
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleString('en-GB', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
 }
 
 // ── DOM helpers ───────────────────────────────────────────────

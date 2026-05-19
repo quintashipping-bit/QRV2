@@ -100,25 +100,12 @@ function draw(data) {
             <td>${supplierList(x)}</td>
             <td>
               <div style="display:flex;flex-direction:column;gap:4px">
-                ${x.warehouseSummary ? `
-                  <div style="
-                    font-size:11px;color:#9ca3af;
-                    background:#111827;padding:4px 7px;
-                    border-radius:4px;margin-bottom:4px;
-                    border-left:2px solid #374151;
-                  ">
-                    <span style="color:#6b7280;font-size:10px">
-                      Auto (warehouse):
-                    </span><br>
-                    ${x.warehouseSummary}
-                  </div>
-                ` : ''}
                 <textarea
                   id="txt_${x.id}"
                   rows="2"
-                  placeholder="Trader status note…"
+                  placeholder="Customer/shipping note…"
                   style="font-size:12px"
-                >${x.customerStatus || ''}</textarea>
+                >${visibleCustomerStatus(x)}</textarea>
               </div>
             </td>
             <td>
@@ -170,8 +157,8 @@ function csvExport(data) {
 
   data.forEach(x => {
     const whSt  = x.warehouseStatus || calcWhStatus(x.items || [])
-    // Use trader note if set, otherwise auto status from warehouse
-    const status = (document.getElementById(`txt_${x.id}`)?.value || x.customerStatus || x.warehouseSummary || '').trim()
+    const status = (document.getElementById(`txt_${x.id}`)?.value ||
+      visibleCustomerStatus(x)).trim()
 
     csv += [
       q(x.customerName),
@@ -258,6 +245,14 @@ function whSupplierProgress(x) {
     const icon   = hasQ ? '⚠️' : allIn ? '✅' : someIn ? '🔶' : '⏳'
     return `<div style="font-size:11px;color:#9ca3af">${icon} ${sup}</div>`
   }).join('')
+}
+
+function visibleCustomerStatus(x) {
+  const note = (x.customerStatus || '').trim()
+  const warehouse = (x.warehouseSummary || '').trim()
+  return note && note !== warehouse
+    ? note
+    : ''
 }
 
 function supplierList(x) {
