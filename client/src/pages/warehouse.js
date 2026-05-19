@@ -76,6 +76,7 @@ async function loadReferenceData() {
   ])
 
   allOrders = ordSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+    .filter(shouldShowInWarehouse)
 
   countries = cntSnap.docs.map(d => {
     const x = d.data()
@@ -269,6 +270,11 @@ async function openDetail(id) {
   // Wire exception manager
   wireExReasonManager(order.id)
 
+}
+
+function shouldShowInWarehouse(order) {
+  return (order.status || '') !== 'Packed' &&
+    (order.warehouseStatus || '') !== 'Packed'
 }
 
 // ─────────────────────────────────────────────────────────────
