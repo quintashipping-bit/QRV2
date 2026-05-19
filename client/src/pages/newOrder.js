@@ -136,6 +136,7 @@ export async function renderNewOrder(panel) {
                 ${p.stockCode || ''}
                 ${p.partNumber || ''}
                 ${p.description || ''}
+                ${p.supplierName || p.supplier || ''}
               </option>
             `).join('')}
 
@@ -205,12 +206,24 @@ export async function renderNewOrder(panel) {
 
 async function loadProducts() {
 
-  const snap =
+  const itemSnap =
+    await getDocs(
+      collection(db,'items')
+    )
+
+  const itemRows = itemSnap.docs.map(d => ({
+    id:d.id,
+    ...d.data()
+  }))
+
+  if (itemRows.length) return itemRows
+
+  const productSnap =
     await getDocs(
       collection(db,'products')
     )
 
-  return snap.docs.map(d => ({
+  return productSnap.docs.map(d => ({
     id:d.id,
     ...d.data()
   }))
@@ -272,7 +285,7 @@ function findProduct(q) {
   const s =
     clean(q)
 
-  return products.find(p =>
+  const exact = products.find(p =>
 
     clean(
       p.stockCode
@@ -290,7 +303,26 @@ function findProduct(q) {
       p.description
     ) === s
 
-  ) || null
+  )
+
+  if (exact) return exact
+
+  const matches = products.filter(p =>
+    [
+      p.stockCode,
+      p.clientStockCode,
+      p.partNumber,
+      p.description,
+      p.supplier,
+      p.supplierName
+    ]
+    .map(clean)
+    .some(x => x.includes(s))
+  )
+
+  return matches.length === 1
+    ? matches[0]
+    : null
 }
 
 function addLine() {
