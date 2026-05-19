@@ -128,7 +128,7 @@ function drawGrid(rows) {
             <td>${whStatusBadge(x)}</td>
             <td style="font-size:12px;color:#9ca3af">${whSummary(x)}</td>
             <td>
-              <button onclick="window._whOpen('${x.id}')">View</button>
+              <button onclick="window._whOpen('${x.id}')">Book in / labels</button>
             </td>
           </tr>
         `).join('')}
@@ -155,7 +155,7 @@ async function openDetail(id) {
 
   panel.innerHTML = `
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:16px">
-      <button onclick="renderWarehouse(window._whPanel)">← Back</button>
+      <button id="wh-back-results">← Back to results</button>
       <h2 style="margin:0">
         Warehouse — ${order.poNumber || '—'}
         <span style="font-size:14px;font-weight:400;color:#9ca3af;margin-left:10px">
@@ -169,6 +169,21 @@ async function openDetail(id) {
       <div class="card" style="margin-bottom:16px;border-left:3px solid #3b82f6">
         <strong>Current status:</strong> ${order.warehouseSummary}
       </div>` : ''}
+
+    <div class="card" style="margin-bottom:16px">
+      <h3 style="margin-bottom:10px">Warehouse actions</h3>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <button id="wh-bond-label">
+          Print Bond Label
+        </button>
+        <button id="wh-final-label">
+          Print Final Label
+        </button>
+        <span style="color:#9ca3af;font-size:12px">
+          Book goods in using the supplier tabs and line-item Receive buttons below.
+        </span>
+      </div>
+    </div>
 
     <!-- ── SUPPLIER TABS ── -->
     <div style="display:flex;gap:6px;margin-bottom:0;flex-wrap:wrap">
@@ -208,22 +223,19 @@ async function openDetail(id) {
       </details>
     </div>
 
-    <!-- ── LABEL GENERATION ── -->
-    <div class="card" style="margin-top:20px">
-      <h3 style="margin-bottom:14px">Labels</h3>
-      <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <button onclick="window._whBondLabel('${order.id}')">
-          🔖 Print Bond Label
-        </button>
-        <button onclick="window._whFinalLabel('${order.id}')">
-          📦 Print Final Label
-        </button>
-      </div>
-    </div>
   `
 
   // Store panel ref for back button
   window._whPanel = panel
+
+  const backBtn = document.getElementById('wh-back-results')
+  if (backBtn) backBtn.onclick = () => renderWarehouse(panel)
+
+  const bondBtn = document.getElementById('wh-bond-label')
+  if (bondBtn) bondBtn.onclick = () => printBondLabel(order.id)
+
+  const finalBtn = document.getElementById('wh-final-label')
+  if (finalBtn) finalBtn.onclick = () => printFinalLabel(order.id)
 
   // Tab switching
   window._whTab = si => {
@@ -250,9 +262,6 @@ async function openDetail(id) {
   // Wire exception manager
   wireExReasonManager(order.id)
 
-  // Wire labels
-  window._whBondLabel  = id => printBondLabel(id, si => si)
-  window._whFinalLabel = id => printFinalLabel(id)
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -537,6 +546,7 @@ function aggregatePacking(packingBySup) {
 // STATUS / SUMMARY CALCULATIONS
 // ─────────────────────────────────────────────────────────────
 function calcWhStatus(items) {
+  if (!items.length) return 'Open'
   if (items.some(x => x.lineStatus === 'Query'))   return 'Query'
   if (items.every(x => Number(x.receivedQty) >= Number(x.qty))) return 'Received'
   if (items.some(x => Number(x.receivedQty) > 0))  return 'Partial'
@@ -560,7 +570,7 @@ function calcWhSummary(order, items) {
 
 function whSummary(order) {
   return order.warehouseSummary ||
-    calcWhSummary(order, order.items || '')
+    calcWhSummary(order, order.items || [])
 }
 
 // ─────────────────────────────────────────────────────────────
