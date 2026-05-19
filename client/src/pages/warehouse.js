@@ -168,16 +168,6 @@ async function openDetail(id) {
       ${whStatusBadge(order)}
     </div>
 
-    ${order.warehouseSummary ? `
-      <div class="card" style="margin-bottom:16px;border-left:3px solid #3b82f6">
-        <strong>Current status:</strong> ${order.warehouseSummary}
-      </div>` : ''}
-
-    ${deliveryEvents(order).length ? `
-      <div class="card" style="margin-bottom:16px;border-left:3px solid #059669">
-        <strong>In bond:</strong> ${bondSummary(order)}
-      </div>` : ''}
-
     <div class="card" style="margin-bottom:16px">
       <h3 style="margin-bottom:10px">Warehouse actions</h3>
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
@@ -188,7 +178,7 @@ async function openDetail(id) {
           Print Final Label
         </button>
         <span style="color:#9ca3af;font-size:12px">
-          Book goods in using the supplier tabs and line-item Receive buttons below.
+          Book goods in using the supplier tabs below.
         </span>
       </div>
     </div>
@@ -255,16 +245,13 @@ async function openDetail(id) {
     })
   }
 
-  // Wire receive buttons
+  // Wire supplier book-in buttons
   supplierNames.forEach((sup, si) => {
     const lineIndices = bySupplier[sup].map(x => x._originalIndex)
-    lineIndices.forEach((origIdx, linePos) => {
-      const btnId = `recv-btn-${si}-${linePos}`
-      const btn = document.getElementById(btnId)
-      if (btn) btn.onclick = () => receiveLine(order.id, origIdx, si, linePos)
-    })
     const savePackBtn = document.getElementById(`save-pack-${si}`)
-    if (savePackBtn) savePackBtn.onclick = () => savePackingInfo(order.id, si, sup)
+    if (savePackBtn) {
+      savePackBtn.onclick = () => bookInSupplier(order.id, si, sup, lineIndices)
+    }
   })
 
   // Wire exception manager
@@ -283,6 +270,7 @@ function shouldShowInWarehouse(order) {
 function renderSupplierPanel(order, supplierName, lines, si) {
   const deliveries = deliveryEvents(order)
     .filter(x => x.supplierName === supplierName)
+  const currentStatus = calcWhSummary(order, order.items || [])
 
   return `
     <div class="card" style="border-radius:0 6px 6px 6px;margin-bottom:0">
@@ -302,7 +290,6 @@ function renderSupplierPanel(order, supplierName, lines, si) {
               <th>Line status</th>
               <th>Exception reason</th>
               <th>Note</th>
-              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -363,11 +350,6 @@ function renderSupplierPanel(order, supplierName, lines, si) {
                       style="width:120px"
                     />
                   </td>
-                  <td>
-                    <button id="recv-btn-${si}-${linePos}">
-                      Receive
-                    </button>
-                  </td>
                 </tr>
               `
             }).join('')}
@@ -380,6 +362,24 @@ function renderSupplierPanel(order, supplierName, lines, si) {
         <h4 style="margin-bottom:12px;color:#9ca3af;font-size:13px;text-transform:uppercase;letter-spacing:.05em">
           Weight, dimensions &amp; bond location — ${supplierName}
         </h4>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:14px">
+          <div style="background:#111827;border-left:3px solid #3b82f6;padding:10px;border-radius:4px">
+            <div style="font-size:11px;color:#6b7280;margin-bottom:4px">
+              Current warehouse status
+            </div>
+            <div style="font-size:13px;color:#d1d5db">
+              ${currentStatus || 'No warehouse activity yet'}
+            </div>
+          </div>
+          <div style="background:#111827;border-left:3px solid #059669;padding:10px;border-radius:4px">
+            <div style="font-size:11px;color:#6b7280;margin-bottom:4px">
+              In bond
+            </div>
+            <div style="font-size:13px;color:#d1d5db">
+              ${bondSummary(order)}
+            </div>
+          </div>
+        </div>
         <div class="grid-4" style="gap:10px">
           <div>
             <label style="font-size:12px;color:#9ca3af">Cartons</label>
@@ -424,7 +424,7 @@ function renderSupplierPanel(order, supplierName, lines, si) {
         </div>
         <div style="margin-top:12px">
           <button id="save-pack-${si}" style="background:#059669">
-            Save delivery into bond
+            Book in
           </button>
         </div>
 
@@ -441,6 +441,7 @@ function renderSupplierPanel(order, supplierName, lines, si) {
                   <th>Weight</th>
                   <th>Dimensions</th>
                   <th>Bond location</th>
+                  <th>Received lines</th>
                 </tr>
               </thead>
               <tbody>
@@ -451,6 +452,7 @@ function renderSupplierPanel(order, supplierName, lines, si) {
                     <td>${x.totalWeight || '—'} kg</td>
                     <td>${formatDims(x)}</td>
                     <td>${x.bondLocation || '—'}</td>
+                    <td>${formatDeliveryLines(x)}</td>
                   </tr>
                 `).join('')}
               </tbody>
@@ -483,57 +485,50 @@ window._whAutoStatus = (si, linePos, orderedQty, prevRec) => {
 }
 
 // ─────────────────────────────────────────────────────────────
-// RECEIVE LINE — save a single line receipt to Firestore
+// BOOK IN — save line receipts and delivery details together
 // ─────────────────────────────────────────────────────────────
-async function receiveLine(orderId, origIndex, si, linePos) {
+async function bookInSupplier(orderId, si, supplierName, lineIndices) {
   const snap = await getDoc(doc(db, 'orders', orderId))
   if (!snap.exists()) { notify('Order not found', 'error'); return }
 
   const order = { id: snap.id, ...snap.data() }
   const items = [...(order.items || [])]
-  const item  = { ...items[origIndex] }
+  const receivedLines = []
 
-  const addQty = Number(v(`rcv-${si}-${linePos}`) || 0)
-  if (addQty < 0) { notify('Enter a valid quantity', 'error'); return }
+  lineIndices.forEach((origIndex, linePos) => {
+    const item = { ...items[origIndex] }
+    const addQty = Number(v(`rcv-${si}-${linePos}`) || 0)
 
-  // Update quantities
-  item.receivedQty      = Number(item.receivedQty || 0) + addQty
-  item.countryOfOrigin  = v(`coo-${si}-${linePos}`)
-  item.lineStatus       = v(`st-${si}-${linePos}`)
-  item.exceptionReason  = v(`ex-${si}-${linePos}`)
-  item.note             = v(`nt-${si}-${linePos}`)
+    if (addQty < 0) return
 
-  // Auto-correct status if needed
-  if (item.receivedQty >= Number(item.qty)) {
-    if (item.lineStatus !== 'Query') item.lineStatus = 'Accepted'
-  } else if (item.receivedQty > 0) {
-    if (item.lineStatus !== 'Query') item.lineStatus = 'Partial'
-  }
+    item.receivedQty      = Number(item.receivedQty || 0) + addQty
+    item.countryOfOrigin  = v(`coo-${si}-${linePos}`)
+    item.lineStatus       = v(`st-${si}-${linePos}`)
+    item.exceptionReason  = v(`ex-${si}-${linePos}`)
+    item.note             = v(`nt-${si}-${linePos}`)
 
-  items[origIndex] = item
+    if (item.receivedQty >= Number(item.qty)) {
+      if (item.lineStatus !== 'Query') item.lineStatus = 'Accepted'
+    } else if (item.receivedQty > 0) {
+      if (item.lineStatus !== 'Query') item.lineStatus = 'Partial'
+    }
 
-  // Recalculate order-level warehouse status
-  const whStatus  = calcWhStatus(items)
-  const whSummary = calcWhSummary(order, items)
+    if (addQty > 0) {
+      receivedLines.push({
+        stockCode: item.stockCode || '',
+        partNumber: item.partNumber || '',
+        description: item.description || '',
+        receivedQty: addQty,
+        totalReceived: item.receivedQty,
+        orderedQty: item.qty,
+        lineStatus: item.lineStatus,
+        exceptionReason: item.exceptionReason || '',
+        note: item.note || ''
+      })
+    }
 
-  await updateDoc(doc(db, 'orders', orderId), {
-    items,
-    warehouseStatus:  whStatus,
-    warehouseSummary: whSummary
+    items[origIndex] = item
   })
-
-  notify('Receipt saved', 'success')
-  openDetail(orderId)
-}
-
-// ─────────────────────────────────────────────────────────────
-// SAVE PACKING INFO (weight, dims, bond location) per supplier
-// ─────────────────────────────────────────────────────────────
-async function savePackingInfo(orderId, si, supplierName) {
-  const snap = await getDoc(doc(db, 'orders', orderId))
-  if (!snap.exists()) { notify('Order not found', 'error'); return }
-
-  const order = { id: snap.id, ...snap.data() }
 
   const delivery = {
     id:           `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -544,31 +539,66 @@ async function savePackingInfo(orderId, si, supplierName) {
     width:       v(`pack-w-${si}`),
     height:      v(`pack-h-${si}`),
     bondLocation:v(`pack-bond-${si}`),
+    receivedLines,
     savedAt:     new Date().toISOString()
+  }
+
+  const hasLineReceipt = receivedLines.length > 0
+  const hasDeliveryDetails = delivery.cartons || delivery.totalWeight ||
+    delivery.length || delivery.width || delivery.height || delivery.bondLocation
+  const supplierHasPriorDeliveries = deliveryEvents(order)
+    .some(x => x.supplierName === supplierName)
+
+  if (!hasLineReceipt && hasDeliveryDetails && !supplierHasPriorDeliveries) {
+    lineIndices.forEach(origIndex => {
+      const item = items[origIndex] || {}
+      if (!Number(item.receivedQty || 0)) return
+      receivedLines.push({
+        stockCode: item.stockCode || '',
+        partNumber: item.partNumber || '',
+        description: item.description || '',
+        receivedQty: Number(item.receivedQty || 0),
+        totalReceived: Number(item.receivedQty || 0),
+        orderedQty: item.qty,
+        lineStatus: item.lineStatus || '',
+        exceptionReason: item.exceptionReason || '',
+        note: item.note || ''
+      })
+    })
   }
 
   if (!delivery.cartons && !delivery.totalWeight &&
       !delivery.length && !delivery.width &&
-      !delivery.height && !delivery.bondLocation) {
-    notify('Enter delivery details before saving', 'warn')
+      !delivery.height && !delivery.bondLocation &&
+      !hasLineReceipt) {
+    notify('Enter receipt or delivery details before booking in', 'warn')
     return
   }
 
-  const warehouseDeliveries = [
-    ...deliveryEvents(order),
-    delivery
-  ]
+  if (lineIndices.some((_, linePos) => Number(v(`rcv-${si}-${linePos}`) || 0) < 0)) {
+    notify('Enter a valid received quantity', 'error')
+    return
+  }
+
+  const warehouseDeliveries = hasDeliveryDetails || hasLineReceipt
+    ? [...deliveryEvents(order), delivery]
+    : deliveryEvents(order)
 
   const { packingBySup, packing } =
     aggregateDeliveries(warehouseDeliveries)
+  const whStatus  = calcWhStatus(items)
+  const whSummary = calcWhSummary(order, items)
 
   await updateDoc(doc(db, 'orders', orderId), {
+    items,
+    warehouseStatus: whStatus,
+    warehouseSummary: whSummary,
     warehouseDeliveries,
     packingBySup,
     packing   // shipping page reads `packing`
   })
 
-  notify(`Delivery saved into bond for ${supplierName}`, 'success')
+  notify(`Booked in delivery for ${supplierName}`, 'success')
   openDetail(orderId)
 }
 
@@ -915,6 +945,20 @@ function formatDims(p) {
     return `${p.length}×${p.width}×${p.height} cm`
   }
   return '—'
+}
+
+function formatDeliveryLines(delivery) {
+  const lines = delivery.receivedLines || []
+  if (!lines.length) return '—'
+
+  return lines.map(x => {
+    const code = x.stockCode || x.partNumber || 'Line'
+    const total = x.orderedQty
+      ? ` (${x.totalReceived}/${x.orderedQty} total)`
+      : ''
+    const status = x.lineStatus ? ` - ${x.lineStatus}` : ''
+    return `${code}: +${x.receivedQty}${total}${status}`
+  }).join('<br>')
 }
 
 function formatDateTime(value) {
